@@ -25,18 +25,15 @@ export default function AdminClient({ initialPhotos }: { initialPhotos: Photo[] 
     if (arr.length === 0) return;
     setUploading(true);
     try {
-      const newOnes: Photo[] = [];
-      for (const file of arr) {
-        const fd = new FormData();
-        fd.append('file', file);
-        const res = await fetch('/api/admin/upload', { method: 'POST', body: fd });
-        if (!res.ok) {
-          const t = await res.text();
-          throw new Error(t || '上傳失敗');
-        }
-        const { photo } = (await res.json()) as { photo: Photo };
-        newOnes.push(photo);
+      // 一次送出全部檔案，由 server 端原子寫入 index，避免競態導致照片消失
+      const fd = new FormData();
+      for (const file of arr) fd.append('files', file);
+      const res = await fetch('/api/admin/upload', { method: 'POST', body: fd });
+      if (!res.ok) {
+        const t = await res.text();
+        throw new Error(t || '上傳失敗');
       }
+      const { photos: newOnes } = (await res.json()) as { photos: Photo[] };
       setPhotos((prev) => [...newOnes, ...prev]);
       notify('ok', `已上傳 ${newOnes.length} 張`);
     } catch (e: any) {

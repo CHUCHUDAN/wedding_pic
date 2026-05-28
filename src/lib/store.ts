@@ -36,7 +36,9 @@ export async function readIndex(): Promise<Photo[]> {
   try {
     const url = await findIndexUrl();
     if (!url) return [];
-    const res = await fetch(url, { cache: 'no-store' });
+    // 加上時間戳避免 Vercel Blob public CDN 回傳舊內容
+    const bust = `${url}${url.includes('?') ? '&' : '?'}t=${Date.now()}`;
+    const res = await fetch(bust, { cache: 'no-store' });
     if (!res.ok) return [];
     const data = (await res.json()) as Photo[];
     return Array.isArray(data) ? data : [];
@@ -60,25 +62,38 @@ export async function writeIndex(photos: Photo[]): Promise<void> {
 }
 
 export async function addPhoto(file: File): Promise<Photo> {
-  requireBlobToken();
-  const ext = (file.name.split('.').pop() || 'jpg').toLowerCase();
-  const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  const pathname = `photos/${id}.${ext}`;
-  const blob = await put(pathname, file, {
-    access: 'public',
-    contentType: file.type || 'image/jpeg',
-    addRandomSuffix: false,
-  });
-  const photo: Photo = {
-    id,
-    url: blob.url,
-    pathname: blob.pathname,
-    uploadedAt: Date.now(),
-  };
-  const list = await readIndex();
-  list.unshift(photo);
-  await writeIndex(list);
+  const [photo] = await addPhotos([file]);
   return photo;
+}
+
+export async function addPhotos(files: File[]): Promise<Photo[]> {
+  requireBlobToken();
+  // 先平行上傳所有檔案到 Blob（不動 index）
+  const uploaded = await Promise.all(
+    files.map(async (file) => {
+      const ext = (file.name.split('.').pop() || 'jpg').toLowerCase();
+      // 用 performance-friendly 但更不易碰撞的 id
+      const id = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}-${Math.random().toString(36).slice(2, 6)}`;
+      const pathname = `photos/${id}.${ext}`;
+      const blob = await put(pathname, file, {
+        access: 'public',
+        contentType: file.type || 'image/jpeg',
+        addRandomSuffix: false,
+      });
+      const photo: Photo = {
+        id,
+        url: blob.url,
+        pathname: blob.pathname,
+        uploadedAt: Date.now(),
+      };
+      return photo;
+    })
+  );
+  // 一次性讀寫 index，避免多次請求競態
+  const list = await readIndex();
+  const next = [...uploaded, ...list];
+  await writeIndex(next);
+  return uploaded;
 }
 
 export async function removePhoto(id: string): Promise<void> {
