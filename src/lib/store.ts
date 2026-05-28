@@ -51,7 +51,6 @@ export async function writeIndex(photos: Photo[]): Promise<void> {
     access: 'public',
     contentType: 'application/json',
     addRandomSuffix: false,
-    allowOverwrite: true,
     cacheControlMaxAge: 0,
   });
 }
