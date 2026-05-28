@@ -47,14 +47,11 @@ export async function readIndex(): Promise<Photo[]> {
 
 export async function writeIndex(photos: Photo[]): Promise<void> {
   requireBlobToken();
-  const existingUrl = await findIndexUrl();
-  if (existingUrl) {
-    try { await del(existingUrl); } catch { /* ignore */ }
-  }
   await put(INDEX_PATH, JSON.stringify(photos), {
     access: 'public',
     contentType: 'application/json',
     addRandomSuffix: false,
+    allowOverwrite: true,
     cacheControlMaxAge: 0,
   });
 }
