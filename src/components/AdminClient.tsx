@@ -15,6 +15,15 @@ export default function AdminClient({ initialPhotos }: { initialPhotos: Photo[] 
   const dragId = useRef<string | null>(null);
   const [overId, setOverId] = useState<string | null>(null);
 
+  // 序列化所有會動到 index 的請求，避免並行寫入造成 race（已刪的照片復活、或新上傳消失）
+  const mutationQueue = useRef<Promise<unknown>>(Promise.resolve());
+  function enqueue<T>(task: () => Promise<T>): Promise<T> {
+    const next = mutationQueue.current.then(task, task);
+    // 即使前一個失敗也繼續排隊；但不要把 reject 帶到下一個
+    mutationQueue.current = next.catch(() => undefined);
+    return next;
+  }
+
   function notify(kind: 'ok' | 'err', msg: string) {
     setFlash({ kind, msg });
     setTimeout(() => setFlash(null), 2800);
@@ -28,7 +37,7 @@ export default function AdminClient({ initialPhotos }: { initialPhotos: Photo[] 
       // 一次送出全部檔案，由 server 端原子寫入 index，避免競態導致照片消失
       const fd = new FormData();
       for (const file of arr) fd.append('files', file);
-      const res = await fetch('/api/admin/upload', { method: 'POST', body: fd });
+      const res = await enqueue(() => fetch('/api/admin/upload', { method: 'POST', body: fd }));
       if (!res.ok) {
         const t = await res.text();
         throw new Error(t || '上傳失敗');
@@ -48,25 +57,36 @@ export default function AdminClient({ initialPhotos }: { initialPhotos: Photo[] 
     if (!confirm('確定刪除這張照片？此動作無法復原。')) return;
     const prev = photos;
     setPhotos((p) => p.filter((x) => x.id !== id));
-    const res = await fetch(`/api/admin/delete?id=${encodeURIComponent(id)}`, {
-      method: 'DELETE',
-    });
-    if (!res.ok) {
+    try {
+      const res = await enqueue(() =>
+        fetch(`/api/admin/delete?id=${encodeURIComponent(id)}`, { method: 'DELETE' })
+      );
+      if (!res.ok) {
+        setPhotos(prev);
+        notify('err', '刪除失敗');
+      } else {
+        notify('ok', '已刪除');
+      }
+    } catch {
       setPhotos(prev);
       notify('err', '刪除失敗');
-    } else {
-      notify('ok', '已刪除');
     }
   }
 
   async function persistOrder(next: Photo[]) {
-    const res = await fetch('/api/admin/reorder', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ ids: next.map((p) => p.id) }),
-    });
-    if (!res.ok) notify('err', '排序儲存失敗');
-    else notify('ok', '排序已儲存');
+    try {
+      const res = await enqueue(() =>
+        fetch('/api/admin/reorder', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ ids: next.map((p) => p.id) }),
+        })
+      );
+      if (!res.ok) notify('err', '排序儲存失敗');
+      else notify('ok', '排序已儲存');
+    } catch {
+      notify('err', '排序儲存失敗');
+    }
   }
 
   function onDragStart(id: string) { dragId.current = id; }
