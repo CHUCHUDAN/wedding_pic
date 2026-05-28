@@ -21,7 +21,7 @@
 ### 1. 把專案推上 GitHub
 
 ```powershell
-cd "C:\Users\wits.danielchu\Desktop\pic"
+cd "C:\Users\wits.danielchu\Desktop\wedding_pic"
 git init
 git add .
 git commit -m "init: wedding gallery"
@@ -60,14 +60,14 @@ git push -u origin main
 ## 🧑‍💻 本地開發
 
 ```powershell
-cd "C:\Users\wits.danielchu\Desktop\pic"
-npm install
+cd "C:\Users\wits.danielchu\Desktop\wedding_pic"
+pnpm install   # 或 npm install
 Copy-Item .env.example .env.local
 # 編輯 .env.local，填入：
 #   ADMIN_PASSWORD=任意密碼
 #   AUTH_SECRET=任意亂碼
 #   BLOB_READ_WRITE_TOKEN=（Vercel 專案 Storage 頁的 ".env.local" 區可複製）
-npm run dev
+pnpm dev       # 或 npm run dev
 ```
 
 打開 http://localhost:3000 ， 後台在 http://localhost:3000/admin
@@ -90,7 +90,8 @@ src/
       admin/
         login/route.ts        驗證密碼 → 簽 Cookie
         logout/route.ts
-        upload/route.ts       存到 Blob 並更新索引
+        upload/route.ts       簽發 Vercel Blob client upload token
+        finalize/route.ts     client upload 完成後一次寫入照片索引（原子）
         delete/route.ts
         reorder/route.ts
   components/

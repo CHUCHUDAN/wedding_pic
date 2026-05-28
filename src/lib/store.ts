@@ -96,6 +96,32 @@ export async function addPhotos(files: File[]): Promise<Photo[]> {
   return uploaded;
 }
 
+// client upload 完成後，由前端把 metadata 送過來，一次寫入 index
+export async function addPhotosFromUploaded(
+  items: Array<{ url: string; pathname: string }>
+): Promise<Photo[]> {
+  requireBlobToken();
+  if (items.length === 0) return [];
+  const now = Date.now();
+  const photos: Photo[] = items.map((u, i) => ({
+    id: pathnameToId(u.pathname) || `${now}-${i}-${Math.random().toString(36).slice(2, 8)}`,
+    url: u.url,
+    pathname: u.pathname,
+    uploadedAt: now,
+  }));
+  const list = await readIndex();
+  const next = [...photos, ...list];
+  await writeIndex(next);
+  return photos;
+}
+
+function pathnameToId(pathname: string): string {
+  // photos/<id>.<ext> 或 photos/<id>-<randomSuffix>.<ext>
+  const file = pathname.split('/').pop() || pathname;
+  const dot = file.lastIndexOf('.');
+  return dot > 0 ? file.slice(0, dot) : file;
+}
+
 export async function removePhoto(id: string): Promise<void> {
   const list = await readIndex();
   const target = list.find((p) => p.id === id);
