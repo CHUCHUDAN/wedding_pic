@@ -20,12 +20,13 @@ export default function LoginForm() {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ password: pw }),
     });
-    setLoading(false);
     if (res.ok) {
-      router.replace(nextPath);
-    } else {
-      setErr('密碼錯誤');
+      // 用 hard navigation，免得遇到 RSC fetch 卡住、整個畫面停在「登入中…」
+      window.location.href = nextPath;
+      return;
     }
+    setLoading(false);
+    setErr('密碼錯誤');
   }
 
   return (

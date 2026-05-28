@@ -98,6 +98,7 @@ export default function AdminClient({ initialPhotos }: { initialPhotos: Photo[] 
       }
       const { photos: newOnes } = (await res.json()) as { photos: Photo[] };
       setPhotos((prev) => [...newOnes, ...prev]);
+      router.refresh();
       notify('ok', `已上傳 ${newOnes.length} 張`);
     } catch (e: any) {
       notify('err', e?.message || '上傳失敗');
@@ -120,6 +121,7 @@ export default function AdminClient({ initialPhotos }: { initialPhotos: Photo[] 
         setPhotos(prev);
         notify('err', '刪除失敗');
       } else {
+        router.refresh();
         notify('ok', '已刪除');
       }
     } catch {
@@ -138,7 +140,10 @@ export default function AdminClient({ initialPhotos }: { initialPhotos: Photo[] 
         })
       );
       if (!res.ok) notify('err', '排序儲存失敗');
-      else notify('ok', '排序已儲存');
+      else {
+        router.refresh();
+        notify('ok', '排序已儲存');
+      }
     } catch {
       notify('err', '排序儲存失敗');
     }
@@ -169,7 +174,7 @@ export default function AdminClient({ initialPhotos }: { initialPhotos: Photo[] 
 
   async function logout() {
     await fetch('/api/admin/logout', { method: 'POST' });
-    router.replace('/admin/login');
+    window.location.href = '/admin/login';
   }
 
   return (

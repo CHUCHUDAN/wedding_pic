@@ -24,21 +24,68 @@ function requireBlobToken(): void {
   }
 }
 
+// Module-scope 快取：寫完 index 後直接記住新 URL，避免每次都要靠 list() 找。
+// Vercel Blob 的 list() 有 eventual consistency，剛寫完不一定马上看得到最新狀態。
+let cachedIndexUrl: string | null = null;
+
 async function findIndexUrl(): Promise<string | null> {
+  if (cachedIndexUrl) return cachedIndexUrl;
   const { blobs } = await list({ prefix: 'index/' });
   const found = blobs.find((b) => b.pathname === INDEX_PATH);
-  return found ? found.url : null;
+  if (found) cachedIndexUrl = found.url;
+  return cachedIndexUrl;
 }
 
-export async function readIndex(): Promise<Photo[]> {
-  // 本機尚未設定 Blob token 時，回傳空清單而不是 500
+// Promise.race fallback：只有「顯示用」（SSR）才能啟用，避免使用者本機網路慢時整頁卡 30 秒。
+// 寫入流程絕不使用 timeout，否則 readIndex 拿到 [] 會讓 removePhoto / reorderPhotos
+// 誤以為「找不到要刪的照片」而 no-op 或把整份 index 蓋空，造成「刪不掉」。
+function withTimeout<T>(p: Promise<T>, ms: number, fallback: T, label: string): Promise<T> {
+  let t: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([
+    p.finally(() => { if (t) clearTimeout(t); }),
+    new Promise<T>((resolve) => {
+      t = setTimeout(() => {
+        if (typeof window === 'undefined') {
+          // eslint-disable-next-line no-console
+          console.warn(`[store] ${label} timed out after ${ms}ms — returning fallback (僅顯示用)`);
+        }
+        resolve(fallback);
+      }, ms);
+    }),
+  ]);
+}
+
+export type ReadIndexOptions = {
+  /** 超過 ms 仍未完成則回傳空陣列。僅供 SSR 顯示用；mutation 流程請勿傳。 */
+  timeoutMs?: number;
+};
+
+export async function readIndex(opts: ReadIndexOptions = {}): Promise<Photo[]> {
   if (!hasBlobToken()) return [];
+  const work = doReadIndex();
+  if (opts.timeoutMs && opts.timeoutMs > 0) {
+    return withTimeout(work, opts.timeoutMs, [], 'readIndex');
+  }
+  return work;
+}
+
+async function doReadIndex(): Promise<Photo[]> {
   try {
     const url = await findIndexUrl();
     if (!url) return [];
-    // 加上時間戳避免 Vercel Blob public CDN 回傳舊內容
     const bust = `${url}${url.includes('?') ? '&' : '?'}t=${Date.now()}`;
     const res = await fetch(bust, { cache: 'no-store' });
+    if (res.status === 404) {
+      // 快取的 URL 失效（被別的程序砸了），清掉重試一次
+      cachedIndexUrl = null;
+      const fresh = await findIndexUrl();
+      if (!fresh) return [];
+      const bust2 = `${fresh}${fresh.includes('?') ? '&' : '?'}t=${Date.now()}`;
+      const res2 = await fetch(bust2, { cache: 'no-store' });
+      if (!res2.ok) return [];
+      const data2 = (await res2.json()) as Photo[];
+      return Array.isArray(data2) ? data2 : [];
+    }
     if (!res.ok) return [];
     const data = (await res.json()) as Photo[];
     return Array.isArray(data) ? data : [];
@@ -49,16 +96,45 @@ export async function readIndex(): Promise<Photo[]> {
 
 export async function writeIndex(photos: Photo[]): Promise<void> {
   requireBlobToken();
-  const existingUrl = await findIndexUrl();
-  if (existingUrl) {
-    try { await del(existingUrl); } catch { /* ignore */ }
+  // 先 put 新的，再 del 舊的，避免「中間有一段時間 index 不存在」造成讀者 404。
+  // 伺服器如果不允許同名覆寫，才退回 del→put。
+  const oldUrl = cachedIndexUrl;
+  let putUrl: string | null = null;
+  try {
+    const blob = await put(INDEX_PATH, JSON.stringify(photos), {
+      access: 'public',
+      contentType: 'application/json',
+      addRandomSuffix: false,
+      cacheControlMaxAge: 0,
+    });
+    putUrl = blob.url;
+    cachedIndexUrl = blob.url;
+  } catch (e: any) {
+    const msg = String(e?.message || '');
+    if (/already exists|overwrite|conflict/i.test(msg)) {
+      try {
+        if (oldUrl) await del(oldUrl);
+        else {
+          const found = await findIndexUrl();
+          if (found) await del(found);
+        }
+      } catch { /* ignore */ }
+      const blob = await put(INDEX_PATH, JSON.stringify(photos), {
+        access: 'public',
+        contentType: 'application/json',
+        addRandomSuffix: false,
+        cacheControlMaxAge: 0,
+      });
+      putUrl = blob.url;
+      cachedIndexUrl = blob.url;
+    } else {
+      throw e;
+    }
   }
-  await put(INDEX_PATH, JSON.stringify(photos), {
-    access: 'public',
-    contentType: 'application/json',
-    addRandomSuffix: false,
-    cacheControlMaxAge: 0,
-  });
+  // 若覆寫後 URL 變了，砸掉舊的（best-effort）
+  if (oldUrl && putUrl && oldUrl !== putUrl) {
+    try { await del(oldUrl); } catch { /* ignore */ }
+  }
 }
 
 export async function addPhoto(file: File): Promise<Photo> {
@@ -122,20 +198,23 @@ function pathnameToId(pathname: string): string {
   return dot > 0 ? file.slice(0, dot) : file;
 }
 
-export async function removePhoto(id: string): Promise<void> {
+export async function removePhoto(id: string): Promise<boolean> {
+  // mutation：一定要拿到真實 list（不能 timeout）；否則會讓「刪不掉」限際情況發生
   const list = await readIndex();
   const target = list.find((p) => p.id === id);
-  if (!target) return;
+  if (!target) return false;
   try {
     await del(target.url);
   } catch {
-    // ignore
+    // 圖片實體刪不掉不影響 index 更新
   }
   await writeIndex(list.filter((p) => p.id !== id));
+  return true;
 }
 
 export async function reorderPhotos(orderedIds: string[]): Promise<Photo[]> {
   const list = await readIndex();
+  if (list.length === 0) return [];
   const map = new Map(list.map((p) => [p.id, p]));
   const next: Photo[] = [];
   for (const id of orderedIds) {
@@ -145,7 +224,7 @@ export async function reorderPhotos(orderedIds: string[]): Promise<Photo[]> {
       map.delete(id);
     }
   }
-  // append any leftover (新上傳但尚未排序的)
+  // 新上傳但尚未排序的接在後面
   for (const leftover of map.values()) next.push(leftover);
   await writeIndex(next);
   return next;

@@ -11,7 +11,8 @@ export default async function HomePage({
 }: {
   searchParams: { page?: string };
 }) {
-  const photos = await readIndex();
+  // 顯示用：超過 15 秒未拿到就先顯空相簿，避免使用者一直看到「轉圈」
+const photos = await readIndex({ timeoutMs: 15000 });
   const totalPages = Math.max(1, Math.ceil(photos.length / PAGE_SIZE));
   const pageRaw = parseInt(searchParams.page || '1', 10);
   const page = Math.min(Math.max(1, isNaN(pageRaw) ? 1 : pageRaw), totalPages);
